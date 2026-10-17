@@ -1,0 +1,56 @@
+// SOC Threat Detection Dashboard — Microsoft Sentinel KQL examples
+// These queries assume your workspace has the SigninLogs table populated.
+// They will NOT run against the local CSV until you ingest data into a workspace.
+
+// 1. Recent sign-in events
+SigninLogs
+| where TimeGenerated > ago(24h)
+| project TimeGenerated, UserPrincipalName, IPAddress, ResultType, ResultDescription, AppDisplayName
+| order by TimeGenerated desc
+
+// 2. Failed sign-ins by user and IP address
+SigninLogs
+| where TimeGenerated > ago(24h)
+| where ResultType != 0
+| summarize FailedAttempts = count(),
+            FirstSeen = min(TimeGenerated),
+            LastSeen = max(TimeGenerated)
+  by UserPrincipalName, IPAddress
+| where FailedAttempts >= 5
+| order by FailedAttempts desc
+
+// 3. Failed sign-ins over time (select a time chart in Logs/Workbook)
+SigninLogs
+| where TimeGenerated > ago(24h)
+| where ResultType != 0
+| summarize FailedAttempts = count() by bin(TimeGenerated, 1h)
+| order by TimeGenerated asc
+
+// 4. Top source IPs generating failed sign-ins
+SigninLogs
+| where TimeGenerated > ago(24h)
+| where ResultType != 0
+| summarize FailedAttempts = count(), TargetedUsers = dcount(UserPrincipalName)
+  by IPAddress
+| top 10 by FailedAttempts desc
+
+// 5. Users with both failures and successes from the same IP in the last 24 hours.
+// This is a hunting lead; it does not prove that success followed the failures.
+let Failed =
+    SigninLogs
+    | where TimeGenerated > ago(24h)
+    | where ResultType != 0
+    | summarize FailedAttempts = count(), LastFailure = max(TimeGenerated)
+      by UserPrincipalName, IPAddress
+    | where FailedAttempts >= 5;
+let Successful =
+    SigninLogs
+    | where TimeGenerated > ago(24h)
+    | where ResultType == 0
+    | summarize FirstSuccess = min(TimeGenerated)
+      by UserPrincipalName, IPAddress;
+Failed
+| join kind=leftouter Successful on UserPrincipalName, IPAddress
+| where isnotnull(FirstSuccess) and FirstSuccess >= LastFailure
+| project UserPrincipalName, IPAddress, FailedAttempts, LastFailure, FirstSuccess
+| order by FailedAttempts desc
